@@ -3,7 +3,6 @@ pragma solidity >=0.4.22 <0.9.0;
 import "@openzeppelin/contracts/token/ERC721/ERC721.sol";
 import "@openzeppelin/contracts/utils/math/SafeMath.sol";
 import "@openzeppelin/contracts/token/ERC721/extensions/ERC721URIStorage.sol";
-import "./IPancakePair.sol";
 
 interface IERC20{
     function balanceOf(address _owner) external view returns (uint256);
@@ -17,6 +16,16 @@ interface IPancakeFactory {
     function getPair(address tokenA, address tokenB) external view returns (address pair);
 }
 
+interface IPancakeRouter {
+    function swapExactTokensForTokens(
+    uint amountIn,
+    uint amountOutMin,
+    address[] calldata path,
+    address to,
+    uint deadline
+    ) external returns (uint[] memory amounts);
+}
+
 contract NFB is ERC721,ERC721URIStorage{
     using SafeMath for uint256;
     address owner;
@@ -27,6 +36,7 @@ contract NFB is ERC721,ERC721URIStorage{
     address CD3FiToken;
     IERC20 CD3FiContract;
     IPancakeFactory factory;
+    IPancakeRouter router = IPancakeRouter(0x9Ac64Cc6e4415144C455BD8E4837Fea55603e5c3);
     uint256 epochOfDeployment;
     address payable sponsor;
     address payable GuarenteeFund;
@@ -84,27 +94,33 @@ contract NFB is ERC721,ERC721URIStorage{
         totalNFBSupply += 50;
     }
 
-    function handlePrimarySale(address from, address to, uint256 tokenId) public payable{
-        CD3FiContract.transfer(address(this), nfbPriceInCd3Fi[tokenId]);
-        uint256 busdPriceToBeDistributed = getTokenPrice(CD3FiBUSDPairAddress, nfbPriceInCd3Fi[tokenId]).div(100);
-        //assuming this is the contract that will have BUSD to distribute
-
-        uint256 sponsorAmnt = busdPriceToBeDistributed.mul(50).div(100);
-        uint256 guarenteeFundAmnt = busdPriceToBeDistributed.mul(40).div(100);
-        uint256 cinemaDraftAmnt = busdPriceToBeDistributed.mul(10).div(100);
+    function handlePrimarySale(address to, uint256 tokenId) public payable{
+        CD3FiContract.transferFrom(to, address(this), nfbPriceInCd3Fi[tokenId]);
+        CD3FiContract.approve(address(router), nfbPriceInCd3Fi[tokenId]);
+        address[] memory path = new address[](2);
+        path[0] = address(BUSDContract);
+        path[1] = address(CD3FiContract);
+        uint[] memory amounts = router.swapExactTokensForTokens(nfbPriceInCd3Fi[tokenId],0,path,address(this),block.timestamp.add(10 minutes));
+        uint256 sponsorAmnt = amounts[1].mul(50).div(100);
+        uint256 guarenteeFundAmnt = amounts[1].mul(40).div(100);
+        uint256 cinemaDraftAmnt = amounts[1].mul(10).div(100);
         BUSDContract.transfer(CinemaDraft, cinemaDraftAmnt);
         BUSDContract.transfer(GuarenteeFund, guarenteeFundAmnt);
         BUSDContract.transfer(sponsor, sponsorAmnt);
     }
 
     function handleSecondarySale(address from, address to, uint256 tokenId) public payable{
-        CD3FiContract.transfer(address(this), nfbPriceInCd3Fi[tokenId]);
-        uint256 busdPriceToBeDistributed = getTokenPrice(CD3FiBUSDPairAddress, nfbPriceInCd3Fi[tokenId]).div(100);
-        //assuming this is the contract that will have BUSD to distribute
-
-        uint256 sponsorAmnt = busdPriceToBeDistributed.mul(8).div(100);
-        uint256 guarenteeFundAmnt = busdPriceToBeDistributed.mul(6).div(100);
-        uint256 cinemaDraftAmnt = busdPriceToBeDistributed.mul(1).div(100);
+        uint256 cd3FiDeduction = nfbPriceInCd3Fi[tokenId].mul(15).div(100);
+        CD3FiContract.transferFrom(to, address(this) , cd3FiDeduction);
+        CD3FiContract.transferFrom(to, from, nfbPriceInCd3Fi[tokenId].sub(cd3FiDeduction));
+        CD3FiContract.approve(address(router), cd3FiDeduction);
+        address [] memory path = new address[](2);
+        path[0] = address(BUSDContract);
+        path[1] = address(CD3FiContract);
+        uint[] memory amounts = router.swapExactTokensForTokens(cd3FiDeduction,0,path,address(this),block.timestamp.add(10 minutes));
+        uint256 sponsorAmnt = amounts[1].mul(8).div(100);
+        uint256 guarenteeFundAmnt = amounts[1].mul(6).div(100);
+        uint256 cinemaDraftAmnt = amounts[1].mul(1).div(100);
         BUSDContract.transfer(CinemaDraft, cinemaDraftAmnt);
         BUSDContract.transfer(GuarenteeFund, guarenteeFundAmnt);
         BUSDContract.transfer(sponsor, sponsorAmnt);
@@ -124,7 +140,7 @@ contract NFB is ERC721,ERC721URIStorage{
         }
 
         if(from == owner){
-            handlePrimarySale(from, to, tokenId);
+            handlePrimarySale(to, tokenId);
         }
         else{
             handleSecondarySale(from, to, tokenId);
@@ -132,13 +148,6 @@ contract NFB is ERC721,ERC721URIStorage{
         super._transfer(from, to, tokenId);
     }
 
-    function getTokenPrice(address pairAddress, uint amount) private view returns(uint){
-        IPancakePair pair = IPancakePair(pairAddress);
-        IERC20 token1 = IERC20(pair.token1());
-        (uint Res0, uint Res1,) = pair.getReserves();
-        uint res0 = Res0*(10**token1.decimals());
-        return((amount*res0)/Res1); // return amount of token0 (BUSD) to buy amount*token1 (CD3Fi)
-    }
 
     function _burn(uint256 tokenId) internal override(ERC721URIStorage, ERC721) {
         super._burn(tokenId);
